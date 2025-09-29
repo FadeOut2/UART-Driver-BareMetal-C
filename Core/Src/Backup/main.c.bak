@@ -1,0 +1,88 @@
+#include "stm32f767xx.h"
+#include <stdint.h>
+
+/* ---- Bits ---- */
+#define USART3_BIT  18U   // RCC->APB1ENR USART3EN
+#define GPIOD_BIT    3U   // RCC->AHB1ENR GPIODEN
+#define PD8          8U   // USART3_TX
+#define PD9          9U   // USART3_RX
+
+/* ---- Clocks & baud ---- */
+#define SYCLK_HZ          96000000UL
+#define USART3_BAUDRATE   115200UL
+#define USART3_BRR_VAL    ((SYCLK_HZ + (USART3_BAUDRATE/2)) / USART3_BAUDRATE) // rounded
+
+static inline void delay(volatile uint32_t t){
+    while (t--) { __asm__("nop"); }
+}
+
+static void GPIOD_init(void)
+{
+    // Enable port D clock
+    RCC->AHB1ENR |= (1U << GPIOD_BIT);
+    (void)RCC->AHB1ENR;
+
+    // PD8/PD9 -> Alternate Function (10b)
+    GPIOD->MODER &= ~((3U << (PD8*2)) | (3U << (PD9*2)));
+    GPIOD->MODER |=  ((2U << (PD8*2)) | (2U << (PD9*2)));
+
+    // Optional: high speed + pull-ups (UART idle high)
+    GPIOD->OSPEEDR |= (3U << (PD8*2)) | (3U << (PD9*2));
+    GPIOD->PUPDR   &= ~((3U << (PD8*2)) | (3U << (PD9*2)));
+    GPIOD->PUPDR   |=  (1U << (PD8*2)) | (1U << (PD9*2));   
+
+    // AFR[1] nibbles: PD8 -> index 0, PD9 -> index 1 => AF7
+    GPIOD->AFR[1] &= ~((0xFU << ((PD8-8)*4)) | (0xFU << ((PD9-8)*4)));
+    GPIOD->AFR[1] |=  ((7U   << ((PD8-8)*4)) | (7U   << ((PD9-8)*4)));
+}
+
+static void USART3_init(void)
+{
+    // Enable USART3 clock
+    RCC->APB1ENR |= (1U << USART3_BIT);
+    (void)RCC->APB1ENR;
+
+    // Disable and configure
+    USART3->CR1 = 0;
+    USART3->CR2 = 0;    // 1 stop
+    USART3->CR3 = 0;    // no flow control
+
+    // Baud BEFORE UE
+    USART3->BRR = 833;  
+
+    // Enable TX (add RE if you want RX/echo)
+    USART3->CR1 |= USART_CR1_TE;
+    // USART3->CR1 |= USART_CR1_RE;
+
+    // Enable USART and wait for ack
+    USART3->CR1 |= USART_CR1_UE;
+    while ((USART3->ISR & USART_ISR_TEACK) == 0) {;}
+    // if RE enabled: while ((USART3->ISR & USART_ISR_REACK) == 0) {;}
+}
+
+static inline void sendChar(char c){
+    while ((USART3->ISR & USART_ISR_TXE) == 0) {;}
+    USART3->TDR = (uint8_t)c;
+}
+
+static inline void sendString(const char *str){
+    while (*str){
+        while ((USART3->ISR & USART_ISR_TXE) == 0) {;}
+        USART3->TDR = (uint8_t)*str++;
+    }
+    while ((USART3->ISR & USART_ISR_TC) == 0); // ensure last byte shifted
+}
+
+void _init(void) {}
+
+int main(void)
+{
+    SystemInit();        // must yield PCLK1=48 MHz per your IOC
+    GPIOD_init();
+    USART3_init();
+
+    for(;;){
+        sendString("I Mastered the UART basics!!!\r\n");
+        delay(480000);   // crude ~10ms-ish; adjust as you like
+    }
+}
